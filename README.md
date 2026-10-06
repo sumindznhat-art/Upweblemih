@@ -1,19 +1,40 @@
-#  TOOL LEMINH
+#  ZENRO TOOL 
 
-## Deploy GitHub Pages
-1. Tạo repo public
-2. Upload đúng cấu trúc thư mục
-3. Settings → Pages → Source: main/root → Save
-4. Truy cập `https://<user>.github.io/<repo>/`
+ tool phân tích Tài Xỉu MD5  Baccarat 
 
-## Tài khoản Admin
-- Email: `leminhdz@gmail.com`
-- Mật khẩu: `admin123`
+## 🚀 Deploy lên GitHub Pages
 
-## Tính năng
-- Đăng ký / Đăng nhập
-- Menu 3 gạch: Lịch sử nạp / Lịch sử key / Duyệt tiền / Admin
-- Ấn tool → iframe load đúng `game_url` + panel AI đọc API của web đó
-- Số dư = 0 → không mua được key, phải nạp tiền
-- Nạp tiền: hiện STK + QR ảnh (admin cấu hình Base64)
-- Admin: cấp tiền, cấp key, check IP, xem API từng tool, sửa tool
+### Bước 1: Tạo repo
+1. Vào https://github.com/new
+2. Đặt tên repo (VD: `zenro-tool`)
+3. Chọn **Public**
+4. Bấm **Create repository**
+
+### Bước 2: Upload files
+Upload **tất cả** các file sau lên repo (giữ nguyên tên):
+- `index.html`
+- `style.css`
+- `config.js`
+- `db.js`
+- `auth.js`
+- `app.js`
+- `admin.js`
+- `engine.js`
+- `README.md`
+
+### Bước 3: Bật GitHub Pages
+1. Vào **Settings** → **Pages**
+2. Source: chọn **Deploy from a branch**
+3. Branch: chọn **main** / **root**
+4. Bấm **Save**
+5. Đợi 1-2 phút, link web sẽ là:
+   `https://<username>.github.io/<repo-name>/`
+
+## 👑 Tài khoản Admin mặc định
+- **Email:** `leminhdz@gmail.com`
+- **Password:** `admin123`
+
+⚠️ **ĐỔI MẬT KHẨU NGAY** sau khi deploy! Sửa trong file `config.js`:
+```js
+adminEmail: 'email_cua_ban@gmail.com',
+adminPassword: 'matkhau_moi_manh',
