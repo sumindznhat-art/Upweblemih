@@ -1,326 +1,390 @@
-/* Avatar long-press */
-(function(){
-  const trigger=document.getElementById('avatarTrigger');if(!trigger)return;
-  const HOLD_MS=1200;let timer=null,holding=false,sx=0,sy=0,moved=false;const TOL=12;
-  function start(x,y){sx=x;sy=y;moved=false;holding=true;timer=setTimeout(()=>{if(!holding||moved)return;holding=false;openAvatarModal();},HOLD_MS);}
-  function cancel(){holding=false;if(timer){clearTimeout(timer);timer=null;}}
-  function move(x,y){if(!holding)return;if(Math.abs(x-sx)>TOL||Math.abs(y-sy)>TOL){moved=true;cancel();}}
-  trigger.addEventListener('mousedown',e=>{e.preventDefault();start(e.clientX,e.clientY);});
-  trigger.addEventListener('mousemove',e=>move(e.clientX,e.clientY));
-  trigger.addEventListener('mouseup',cancel);trigger.addEventListener('mouseleave',cancel);
-  trigger.addEventListener('touchstart',e=>{const t=e.touches[0];start(t.clientX,t.clientY);},{passive:true});
-  trigger.addEventListener('touchmove',e=>{const t=e.touches[0];move(t.clientX,t.clientY);},{passive:true});
-  trigger.addEventListener('touchend',cancel);trigger.addEventListener('touchcancel',cancel);
-  trigger.addEventListener('contextmenu',e=>e.preventDefault());
-})();
-function openAvatarModal(){
-  const m=document.getElementById('avatarModal');
-  const inp=document.getElementById('avBase64Input');
-  const pv=document.getElementById('avPreview');
-  let s=null;try{s=localStorage.getItem(AVATAR_KEY);}catch(e){}
-  document.getElementById('avStatus').textContent='';
-  if(s){pv.innerHTML=`<img src="${s}">`;inp.value='';}else{pv.innerHTML='🎀';inp.value='';}
-  m.classList.add('show');
+/* ============================================================
+   MAIN APP
+   ============================================================ */
+let clockStarted = false;
+let currentToolSlug = null;
+
+function enterApp(){
+  const u = currentUser();
+  if(!u){ doLogout(); return; }
+  document.getElementById('login-screen').classList.add('hide');
+  document.getElementById('app').classList.add('show');
+  if(u.isAdmin) document.getElementById('drawerAdminBtn').style.display='flex';
+  else document.getElementById('drawerAdminBtn').style.display='none';
+  applyAvatarEverywhere(getUserAvatar());
+  renderAll();
+  showPage('home');
+  startClock();
 }
-function closeAvatarModal(){document.getElementById('avatarModal').classList.remove('show');}
-function saveAvatar(){
-  const inp=document.getElementById('avBase64Input');
-  const st=document.getElementById('avStatus'),pv=document.getElementById('avPreview');
-  const val=inp.value.trim();
-  if(!val||val.length<50){st.style.color='#ef4444';st.textContent='⚠️ Base64 không hợp lệ!';return;}
-  const src=normalizeAvatar(val);
-  const img=new Image();
-  img.onload=()=>{
-    try{localStorage.setItem(AVATAR_KEY,src);}catch(e){}
-    applyAvatarEverywhere(src);pv.innerHTML=`<img src="${src}">`;
-    st.style.color='#10b981';st.textContent='✅ Đã lưu!';
-    setTimeout(closeAvatarModal,900);
-  };
-  img.onerror=()=>{st.style.color='#ef4444';st.textContent='❌ Ảnh lỗi!';};
-  img.src=src;
+
+function doLogout(){
+  clearSession();
+  document.getElementById('login-screen').classList.remove('hide');
+  document.getElementById('app').classList.remove('show');
+  document.getElementById('tool-screen').classList.remove('show');
+  document.getElementById('adminPanel').classList.remove('show');
+  document.getElementById('drawer').classList.remove('show');
+  document.getElementById('drawerOverlay').classList.remove('show');
+  document.getElementById('loginEmail').value='';
+  document.getElementById('loginPass').value='';
+  document.getElementById('loginError').textContent='';
+  document.getElementById('loginSpinner').style.display='none';
+  document.getElementById('btnLoginText').innerHTML='<i class="fa-solid fa-right-to-bracket"></i> ĐĂNG NHẬP';
+  document.getElementById('btnLogin').disabled=false;
+  switchTab('login');
+  if(window.__toolInterval){ clearInterval(window.__toolInterval); window.__toolInterval = null; }
+  window.__toolStarted = false;
 }
-function resetAvatar(){
-  try{localStorage.removeItem(AVATAR_KEY);}catch(e){}
-  applyAvatarEverywhere(DEFAULT_AVATAR);
-  document.getElementById('avPreview').innerHTML='🎀';
-  document.getElementById('avBase64Input').value='';
-  const st=document.getElementById('avStatus');st.style.color='#0ea5e9';st.textContent='↩️ Reset mặc định';
-  setTimeout(()=>st.textContent='',1400);
+
+function showPage(name){
+  document.querySelectorAll('.page').forEach(p => p.classList.remove('active'));
+  document.querySelectorAll('.nav-item').forEach(n => n.classList.remove('active'));
+  const page = document.getElementById('page-' + name);
+  if(page) page.classList.add('active');
+  const nav = document.querySelector(`.nav-item[data-page="${name}"]`);
+  if(nav) nav.classList.add('active');
+  document.getElementById('appContent').scrollTop = 0;
+  if(name==='deposit') renderDeposit();
+  if(name==='vip') renderVIPPage();
+  if(name==='profile') renderProfile();
+  if(name==='tools') renderTools();
 }
-/* Drawer */
+
 function openDrawer(){
+  const u = currentUser();
+  if(!u) return;
   document.getElementById('drawer').classList.add('show');
-  document.getElementById('drawerMask').classList.add('show');
-  const u=currentUser();if(!u)return;
-  document.getElementById('drawerName').textContent=u.name||u.email.split('@')[0];
-  document.getElementById('drawerEmail').textContent=u.email;
-  document.getElementById('drawerAvatar').src=localStorage.getItem(AVATAR_KEY)||DEFAULT_AVATAR;
-  document.getElementById('diAdmin').style.display=u.isAdmin?'flex':'none';
-  const pend=loadDeposits().filter(d=>d.status==='pending');
-  const pb=document.getElementById('pendBadge');
-  pb.textContent=pend.length;
-  pb.style.display=(u.isAdmin&&pend.length>0)?'inline-block':'none';
+  document.getElementById('drawerOverlay').classList.add('show');
+  document.getElementById('drawerName').textContent = u.name || u.email.split('@')[0];
+  document.getElementById('drawerEmail').textContent = u.email;
+  const isVIP = u.isAdmin || (u.keyExpiry && u.keyExpiry > now());
+  const badge = document.getElementById('drawerBadge');
+  if(u.isAdmin){ badge.textContent = '👑 ADMIN'; }
+  else if(isVIP){ badge.textContent = '⭐ VIP MEMBER'; }
+  else { badge.textContent = 'THÀNH VIÊN'; }
+  const av = getUserAvatar();
+  document.getElementById('drawerAvatar').src = av;
+  document.getElementById('drawerAdminBtn').style.display = u.isAdmin ? 'flex' : 'none';
 }
 function closeDrawer(){
   document.getElementById('drawer').classList.remove('show');
-  document.getElementById('drawerMask').classList.remove('show');
+  document.getElementById('drawerOverlay').classList.remove('show');
 }
-/* History */
-function openHistoryDeposit(){
-  closeDrawer();
-  const u=currentUser();if(!u)return;
-  const list=(u.history||[]).slice().reverse();
-  document.getElementById('histTitle').textContent='💰 Lịch sử nạp tiền';
-  const box=document.getElementById('histContent');
-  if(!list.length)box.innerHTML='<div style="text-align:center;color:#94a3b8;font-weight:700;padding:20px">Chưa có giao dịch</div>';
-  else{
-    box.innerHTML='';
-    list.forEach(h=>{
-      const el=document.createElement('div');el.className='info-row';el.style.margin='0 0 8px';
-      const color=h.amount>0?'#10b981':'#ef4444';
-      el.innerHTML=`<div><div class="lbl">${h.type==='deposit'?'Nạp tiền':h.type==='admin'?'Admin':'Mua VIP'}</div>
-        <div style="font-size:11px;color:#94a3b8">${fmtDate(h.at)}</div></div>
-        <div style="text-align:right"><div class="val" style="color:${color}">${h.amount>0?'+':''}${fmt(h.amount)}</div>
-        <div style="font-size:11px;color:#64748b">Số dư: ${fmt(h.balance)}</div></div>`;
-      box.appendChild(el);
-    });
-  }
-  document.getElementById('historyModal').classList.add('show');
-}
-function openHistoryKey(){
-  closeDrawer();
-  const u=currentUser();if(!u)return;
-  const list=(u.keyHistory||[]).slice().reverse();
-  document.getElementById('histTitle').textContent='🔑 Lịch sử key';
-  const box=document.getElementById('histContent');
-  if(!list.length)box.innerHTML='<div style="text-align:center;color:#94a3b8;font-weight:700;padding:20px">Chưa có key</div>';
-  else{
-    box.innerHTML='';
-    list.forEach(h=>{
-      const el=document.createElement('div');el.className='info-row';el.style.margin='0 0 8px';
-      el.innerHTML=`<div><div class="lbl">${h.via==='admin'?'Admin cấp':h.via==='auto'?'Tự động mua':'Tự nhập'}</div>
-        <div style="font-size:11px;font-family:monospace;color:#3b5bfd;font-weight:800">${esc(h.code)}</div>
-        <div style="font-size:11px;color:#94a3b8">${fmtDate(h.at)}</div></div>
-        <div style="text-align:right"><div class="val" style="color:#10b981">+${h.days} ngày</div></div>`;
-      box.appendChild(el);
-    });
-  }
-  document.getElementById('historyModal').classList.add('show');
-}
-function openPendingDeposit(){
-  closeDrawer();
-  const u=currentUser();if(!u)return;
-  const list=loadDeposits().filter(d=>d.email===u.email).slice().reverse();
-  document.getElementById('histTitle').textContent='📋 Yêu cầu nạp của bạn';
-  const box=document.getElementById('histContent');
-  if(!list.length)box.innerHTML='<div style="text-align:center;color:#94a3b8;font-weight:700;padding:20px">Chưa có</div>';
-  else{
-    box.innerHTML='';
-    list.forEach(d=>{
-      const el=document.createElement('div');el.className='info-row';el.style.margin='0 0 8px';
-      let st='',sc='#f59e0b';
-      if(d.status==='pending'){st='⏳ Chờ duyệt';sc='#f59e0b';}
-      else if(d.status==='approved'){st='✅ Đã duyệt';sc='#10b981';}
-      else{st='❌ Từ chối';sc='#ef4444';}
-      el.innerHTML=`<div><div class="lbl">${d.method==='bank'?'NH':'Thẻ'}</div>
-        <div style="font-size:11px;color:#94a3b8">${fmtDate(d.createdAt)}</div></div>
-        <div style="text-align:right"><div class="val">${fmt(d.amount)}</div>
-        <div style="font-size:11px;font-weight:800;color:${sc}">${st}</div></div>`;
-      box.appendChild(el);
-    });
-  }
-  document.getElementById('historyModal').classList.add('show');
-}
-/* Pages */
-function showPage(name){
-  document.querySelectorAll('.page').forEach(p=>p.classList.remove('active'));
-  document.querySelectorAll('.nav-item').forEach(n=>n.classList.remove('active'));
-  const page=document.getElementById('page-'+name);if(page)page.classList.add('active');
-  const nav=document.querySelector(`.nav-item[data-page="${name}"]`);if(nav)nav.classList.add('active');
-  document.getElementById('appContent').scrollTop=0;
-  if(name==='deposit')renderDeposit();
-  if(name==='vip')renderVIPPage();
-  if(name==='profile')renderProfile();
-  if(name==='tools')renderTools();
-}
-/* Clock */
-let clockStarted=false;
+
 function startClock(){
-  if(clockStarted)return;clockStarted=true;
+  if(clockStarted) return; clockStarted = true;
   function tick(){
-    const d=new Date(),p=n=>String(n).padStart(2,'0');
-    document.getElementById('liveClock').textContent=`${p(d.getHours())}:${p(d.getMinutes())}:${p(d.getSeconds())}`;
-    document.getElementById('liveDate').textContent=`${p(d.getDate())}/${p(d.getMonth()+1)}/${d.getFullYear()}`;
+    const d = new Date(), p = n => String(n).padStart(2,'0');
+    document.getElementById('liveClock').textContent = `${p(d.getHours())}:${p(d.getMinutes())}:${p(d.getSeconds())}`;
+    document.getElementById('liveDate').textContent = `${p(d.getDate())}/${p(d.getMonth()+1)}/${d.getFullYear()}`;
   }
-  tick();setInterval(tick,1000);
+  tick(); setInterval(tick, 1000);
 }
-/* Tools */
-let activeCat='all';
+
+/* ===== RENDER TOOLS ===== */
 function renderTools(){
-  const cfg=loadConfig();const u=currentUser();
-  const isVIP=u&&(u.isAdmin||(u.keyExpiry&&u.keyExpiry>now()));
-  const cats=['all',...new Set(cfg.tools.map(t=>t.cat))];
-  const names={all:'Tất cả',taixiu:'Tài Xỉu',sicbo:'Sicbo',baccarat:'Baccarat'};
-  const ct=document.getElementById('catTabs');ct.innerHTML='';
-  cats.forEach(c=>{
-    const b=document.createElement('button');
-    b.className='cat-tab'+(c===activeCat?' active':'');
-    b.textContent=names[c]||c;
-    b.onclick=()=>{activeCat=c;renderTools();};
-    ct.appendChild(b);
-  });
-  const box=document.getElementById('toolList');box.innerHTML='';
-  const list=cfg.tools.filter(t=>t.enabled&&(activeCat==='all'||t.cat===activeCat));
-  document.getElementById('toolCount').textContent=cfg.tools.filter(t=>t.enabled).length;
-  list.forEach(t=>{
-    const card=document.createElement('div');card.className='tool-card';
-    const img=getToolImage(t);
-    const tags=[];
-    if(t.hot)tags.push('<span class="tool-badge-hot">HOT</span>');
-    if(t.is_new)tags.push('<span class="tool-badge-new">NEW</span>');
-    if(t.maintenance)tags.push('<span class="tool-badge-hot" style="background:#f1f5f9;color:#64748b;border-color:#cbd5e1">BẢO TRÌ</span>');
-    card.innerHTML=`
+  const box = document.getElementById('toolList');
+  box.innerHTML = '';
+  const u = currentUser();
+  if(!u) return;
+  const isVIP = u.isAdmin || (u.keyExpiry && u.keyExpiry > now());
+  document.getElementById('toolCount').textContent = PORTS.length;
+
+  PORTS.forEach(t => {
+    const card = document.createElement('div');
+    card.className = 'tool-card';
+    const badges = [];
+    if(t.hot) badges.push('<span class="badge-hot">HOT</span>');
+    if(t.is_new) badges.push('<span class="badge-hot">NEW</span>');
+    if(t.cat) badges.push(`<span class="badge-hot">${t.cat.toUpperCase()}</span>`);
+    const iconHTML = t.image
+      ? `<img src="${t.image}" alt="" onerror="this.style.display='none';this.parentElement.innerHTML='🎲'">`
+      : '🎲';
+    card.innerHTML = `
+      <div class="top-badges">${badges.join('')}</div>
       <div class="tool-head">
-        <div class="tool-logo">${img?`<img src="${img}" onerror="this.parentNode.innerHTML='🎲'">`:'🎲'}</div>
+        <div class="tool-logo">${iconHTML}</div>
         <div class="tool-info">
-          <div class="tool-name-row"><span class="tool-name">${esc(t.name)}</span>${tags.join('')}</div>
-          <div class="tool-desc">Ấn để vào ${esc(t.game_url||'tool')}</div>
+          <div class="tool-name-row"><span class="tool-name">${t.name}</span></div>
+          <div class="tool-tag" style="display:inline-block;margin-top:2px">${(t.cat||'tool').toUpperCase()}</div>
+          <div class="tool-desc">${t.desc || 'Hỗ trợ AI phân tích dữ liệu'}</div>
         </div>
       </div>
       <div class="tool-footer">
-        <div class="vip-req ${isVIP?'ok':''}"><span class="dot"></span>${isVIP?'Đã mở khoá':'Yêu cầu VIP'}</div>
-        <button class="tool-btn ${isVIP?'unlocked':''}"><i class="fa-solid ${isVIP?'fa-unlock':'fa-lock'}"></i> ${isVIP?'MỞ':'VIP'}</button>
-      </div>`;
-    card.querySelector('.tool-btn').onclick=()=>openToolViewer(t);
+        <div class="vip-req ${isVIP?'unlocked':''}"><span class="dot"></span> ${isVIP?'Đã mở khoá VIP':'Yêu cầu VIP'}</div>
+        <button class="vip-btn ${isVIP?'unlocked':''}" onclick="openTool('${t.slug}')">
+          <i class="fa-solid ${isVIP?'fa-unlock':'fa-lock'}"></i> ${isVIP?'MỞ TOOL':'VIP'}
+        </button>
+      </div>
+    `;
     box.appendChild(card);
   });
 }
-/* VIP */
-function renderVIPPage(){
-  const u=currentUser();if(!u)return;
-  const isVIP=u.isAdmin||(u.keyExpiry&&u.keyExpiry>now());
-  document.getElementById('vipBalance').textContent=u.isAdmin?'∞':fmt(u.balance);
-  document.getElementById('vipExpiry').textContent=u.isAdmin?'Vĩnh viễn':(u.keyExpiry?fmtDate(u.keyExpiry):'Chưa kích hoạt');
-  const cfg=loadConfig();const box=document.getElementById('pkgList');box.innerHTML='';
-  cfg.packages.forEach(p=>{
-    const el=document.createElement('div');el.className='pkg-card';
-    const canBuy=u.isAdmin||u.balance>=p.price;
-    el.innerHTML=`
-      <div class="pkg-discount">${esc(p.disc||'')}</div>
-      <div class="pkg-head"><div class="pkg-ic"><i class="fa-solid fa-crown"></i></div><div><div class="pkg-name">${esc(p.name)}</div><div class="pkg-sub">${esc(p.sub||'')}</div></div></div>
-      <div class="pkg-desc">Sử dụng không giới hạn trong ${p.days} ngày</div>
-      <div class="pkg-price-row">
-        <div><div class="pkg-price-lbl">Giá</div><div class="pkg-price">${p.price.toLocaleString('vi-VN')}<span class="u">đ</span></div></div>
-        <div style="text-align:right"><div class="pkg-price-lbl">Cũ</div><div class="pkg-old">${p.old.toLocaleString('vi-VN')}đ</div></div>
+
+/* ===== OPEN TOOL ===== */
+function openTool(slug){
+  const u = currentUser();
+  if(!u) return;
+  const isVIP = u.isAdmin || (u.keyExpiry && u.keyExpiry > now());
+  if(!isVIP){
+    alert('🔒 Tool này yêu cầu VIP!\n\nBạn cần nâng cấp gói VIP để sử dụng.\nVui lòng vào mục "Mua VIP" để đăng ký.');
+    showPage('vip');
+    return;
+  }
+  const tool = PORTS.find(t => t.slug === slug);
+  if(!tool){ alert('❌ Không tìm thấy tool!'); return; }
+
+  currentToolSlug = slug;
+  document.getElementById('tool-screen').classList.add('show');
+  document.getElementById('close-tool').classList.add('show');
+
+  const frame = document.getElementById('gameFrame');
+  frame.src = tool.game_url || 'about:blank';
+
+  // Khởi động engine với API của tool này
+  if(window.__toolInterval){ clearInterval(window.__toolInterval); window.__toolInterval = null; }
+  window.__toolStarted = false;
+
+  // Khởi động engine AI với API tương ứng
+  if(tool.kind === 'view' || tool.kind === 'panel'){
+    if(typeof startToolEngine === 'function'){
+      window.__toolStarted = true;
+      startToolEngine(tool.api_url, slug);
+    }
+  } else if(tool.kind === 'baccarat'){
+    // Baccarat engine riêng - hiển thị đơn giản
+    if(typeof startToolEngine === 'function'){
+      window.__toolStarted = true;
+      startToolEngine(tool.api_url, 'baccarat');
+    }
+  }
+}
+
+function closeToolScreen(){
+  document.getElementById('tool-screen').classList.remove('show');
+  document.getElementById('close-tool').classList.remove('show');
+  document.getElementById('gameFrame').src = 'about:blank';
+  if(window.__toolInterval){ clearInterval(window.__toolInterval); window.__toolInterval = null; }
+  window.__toolStarted = false;
+  currentToolSlug = null;
+}
+
+/* ===== DEPOSIT PAGE ===== */
+function renderDeposit(){
+  const u = currentUser();
+  if(!u) return;
+  document.getElementById('depBalance').textContent = u.isAdmin ? '∞' : fmt(u.balance);
+  const isVIP = u.isAdmin || (u.keyExpiry && u.keyExpiry > now());
+  const st = document.getElementById('depStatus');
+  if(isVIP){ st.style.color = '#10b981'; st.textContent = u.isAdmin ? 'Admin - Toàn quyền' : 'Key còn hạn: ' + fmtDate(u.keyExpiry); }
+  else { st.style.color = '#ef4444'; st.textContent = 'Chưa có key hoạt động'; }
+  renderMyDeposits();
+}
+
+function renderMyDeposits(){
+  const box = document.getElementById('myDepositList');
+  if(!box) return;
+  const u = currentUser();
+  const list = (u && u.deposits) || [];
+  if(!list.length){
+    box.innerHTML = '<div class="empty"><i class="fa-solid fa-receipt"></i>Chưa có yêu cầu nạp nào</div>';
+    return;
+  }
+  box.innerHTML = list.slice(0, 10).map(d => {
+    const cls = d.status === 'pending' ? 'badge-pending' : (d.status === 'approved' ? 'badge-approved' : 'badge-rejected');
+    const statusText = d.status === 'pending' ? 'ĐANG CHỜ' : (d.status === 'approved' ? 'ĐÃ DUYỆT' : 'TỪ CHỐI');
+    return `<div class="adm-card">
+      <div class="r1">
+        <div class="email">${fmt(d.amount)}</div>
+        <span class="badge ${cls}">${statusText}</span>
       </div>
-      <button class="pkg-buy" ${canBuy?'':'disabled'}>${canBuy?'MUA NGAY':'KHÔNG ĐỦ TIỀN'}</button>`;
-    el.querySelector('.pkg-buy').onclick=()=>buyPackage(p.id);
+      <div class="info">
+        PT: <b>${d.method === 'qr' ? 'Chuyển khoản' : 'Thẻ cào'}</b><br>
+        ${d.note ? 'Ghi chú: <b>'+d.note+'</b><br>' : ''}
+        Tạo: <b>${fmtDate(d.createdAt)}</b>
+        ${d.approvedAt ? '<br>Duyệt: <b>'+fmtDate(d.approvedAt)+'</b>' : ''}
+      </div>
+    </div>`;
+  }).join('');
+}
+
+let depFormMethod = 'qr';
+function openDepositForm(method){
+  depFormMethod = method;
+  document.getElementById('depFormTitle').textContent = method === 'qr' ? '📱 Nạp qua Chuyển khoản' : '💳 Nạp qua Thẻ cào';
+  document.getElementById('depAmount').value = '';
+  document.getElementById('depNote').value = '';
+  document.getElementById('depositForm').classList.add('show');
+}
+function closeSheet(id){ document.getElementById(id).classList.remove('show'); }
+
+function submitDeposit(){
+  const u = currentUser();
+  if(!u) return;
+  const amt = parseInt(document.getElementById('depAmount').value, 10);
+  const note = document.getElementById('depNote').value.trim();
+  if(!amt || amt < 10000){ alert('⚠️ Số tiền tối thiểu 10.000đ'); return; }
+  if(amt > 100000000){ alert('⚠️ Số tiền quá lớn!'); return; }
+  createDeposit(u.email, amt, depFormMethod, note);
+  closeSheet('depositForm');
+  alert('✅ Đã gửi yêu cầu nạp ' + fmt(amt) + '\nAdmin sẽ duyệt trong 5-15 phút.\nVui lòng chờ thông báo!');
+  renderMyDeposits();
+}
+
+/* ===== VIP PAGE ===== */
+function renderVIPPage(){
+  const u = currentUser();
+  if(!u) return;
+  const isVIP = u.isAdmin || (u.keyExpiry && u.keyExpiry > now());
+  document.getElementById('vipAccStatus').textContent = u.isAdmin ? 'Admin - Toàn quyền' : (isVIP ? 'VIP Member (Đã nâng cấp)' : 'Tài khoản thường (Chưa nâng cấp)');
+  document.getElementById('vipExpiry').textContent = u.isAdmin ? 'Vĩnh viễn' : (u.keyExpiry ? fmtDate(u.keyExpiry) : 'Chưa kích hoạt');
+
+  const box = document.getElementById('pkgList');
+  box.innerHTML = '';
+  PACKAGES.forEach(p => {
+    const el = document.createElement('div');
+    el.className = 'pkg-card';
+    el.innerHTML = `
+      <div class="pkg-discount">${p.disc}</div>
+      <div class="pkg-head">
+        <div class="pkg-ic"><i class="fa-solid fa-crown"></i></div>
+        <div><div class="pkg-name">${p.name}</div><div class="pkg-sub">${p.sub}</div></div>
+      </div>
+      <div class="pkg-desc">Tận hưởng các đặc quyền VIP và chơi game không giới hạn trong ${p.days} ngày</div>
+      <div class="pkg-price-row">
+        <div><div class="pkg-price-lbl">Mức giá</div><div class="pkg-price">${p.price.toLocaleString('vi-VN')}<span class="u">đ</span></div></div>
+        <div style="text-align:right"><div class="pkg-price-lbl">Giá cũ</div><div class="pkg-old">${p.old.toLocaleString('vi-VN')}đ</div></div>
+      </div>
+      <button class="pkg-buy" onclick="buyPackage('${p.id}')">MUA NGAY</button>
+    `;
     box.appendChild(el);
   });
 }
+
 function buyPackage(id){
-  const u=currentUser();if(!u)return;
-  const cfg=loadConfig();const p=cfg.packages.find(x=>x.id===id);if(!p)return;
-  if(u.balance<p.price){alert('❌ Số dư không đủ!\nCần: '+fmt(p.price)+'\nCó: '+fmt(u.balance)+'\n\nVui lòng NẠP TIỀN trước!');showPage('deposit');return;}
-  if(!confirm('Mua '+p.name+' với giá '+fmt(p.price)+'?'))return;
-  u.balance-=p.price;
-  const base=(u.keyExpiry&&u.keyExpiry>now())?u.keyExpiry:now();
-  u.keyExpiry=base+p.days*24*3600*1000;
-  u.history.push({type:'buy',amount:-p.price,balance:u.balance,at:now(),note:'Mua '+p.name});
-  u.keyHistory.push({code:'BUY-'+p.id,days:p.days,at:now(),via:'buy'});
-  setUser(u.email,u);
-  alert('✅ Mua thành công!\nHạn mới: '+fmtDate(u.keyExpiry));
-  renderAll();showPage('vip');
+  const u = currentUser();
+  if(!u) return;
+  const p = PACKAGES.find(x => x.id === id);
+  if(!p) return;
+  if(u.balance < p.price){
+    alert('❌ Số dư không đủ!\n\nCần: ' + fmt(p.price) + '\nHiện có: ' + fmt(u.balance) + '\n\nVui lòng nạp thêm tiền và chờ Admin duyệt!');
+    showPage('deposit');
+    return;
+  }
+  if(!confirm('Xác nhận mua gói:\n' + p.name + '\nGiá: ' + fmt(p.price) + '\n\nSố dư sau khi mua: ' + fmt(u.balance - p.price))) return;
+  u.balance -= p.price;
+  const base = (u.keyExpiry && u.keyExpiry > now()) ? u.keyExpiry : now();
+  u.keyExpiry = base + p.days * 24 * 3600 * 1000;
+  setUser(u.email, u);
+  addKeyHistory(u.email, p);
+  alert('✅ Mua thành công!\n\nGói: ' + p.name + '\nĐã trừ: ' + fmt(p.price) + '\nHạn mới: ' + fmtDate(u.keyExpiry));
+  renderAll();
+  showPage('vip');
 }
-function autoBuyKeyForUser(user){
-  if(!user)return;
-  const cfg=loadConfig();
-  const isVIP=user.isAdmin||(user.keyExpiry&&user.keyExpiry>now());
-  if(isVIP)return;
-  const avail=cfg.packages.filter(p=>p.price<=user.balance).sort((a,b)=>a.days-b.days);
-  if(!avail.length)return;
-  const p=avail[avail.length-1];
-  user.balance-=p.price;
-  user.keyExpiry=now()+p.days*24*3600*1000;
-  user.history.push({type:'auto-buy',amount:-p.price,balance:user.balance,at:now(),note:'Tự động mua '+p.name});
-  user.keyHistory.push({code:'AUTO-'+p.id,days:p.days,at:now(),via:'auto'});
-  setUser(user.email,user);
+
+/* ===== KEY HISTORY ===== */
+function showKeyHistory(){
+  const u = currentUser();
+  if(!u) return;
+  closeDrawer();
+  const list = getUserKeyHistory(u.email);
+  let html = '<h3>📜 Lịch sử mua Key</h3>';
+  if(!list.length){
+    html += '<div class="empty"><i class="fa-solid fa-clock-rotate-left"></i>Chưa mua key nào</div>';
+  } else {
+    html += list.map(k => `<div class="adm-card">
+      <div class="r1"><div class="email">${k.packageName}</div><span class="badge badge-approved">+${k.days} ngày</span></div>
+      <div class="info">Giá: <b>${fmt(k.price)}</b><br>Mua lúc: <b>${fmtDate(k.purchasedAt)}</b></div>
+    </div>`).join('');
+  }
+  // Tạo modal tạm
+  showTempModal(html);
 }
-/* Deposit */
-function renderDeposit(){
-  const u=currentUser();if(!u)return;
-  document.getElementById('depBalance').textContent=u.isAdmin?'∞':fmt(u.balance);
-  const isVIP=u.isAdmin||(u.keyExpiry&&u.keyExpiry>now());
-  const st=document.getElementById('depStatus');
-  if(isVIP){st.style.color='#10b981';st.textContent=u.isAdmin?'Admin':('Key đến '+fmtDate(u.keyExpiry));}
-  else{st.style.color='#ef4444';st.textContent='Chưa có key';}
-  const cfg=loadConfig();const b=cfg.bank;
-  const bi=document.getElementById('bankInfo');
-  bi.innerHTML=`
-    <h4><i class="fa-solid fa-building-columns"></i> ${esc(b.name||'Ngân hàng')}</h4>
-    <div class="row"><span class="lbl">Số tài khoản</span><span class="val">${esc(b.acc||'—')}</span></div>
-    <div class="row"><span class="lbl">Chủ tài khoản</span><span class="val">${esc(b.holder||'—')}</span></div>
-    ${b.qr?`<div class="bank-qr"><img src="${b.qr}"><div style="font-size:11px;color:#64748b;font-weight:600;margin-top:6px">Quét mã QR để chuyển khoản</div></div>`:'<div class="bank-qr" style="color:#94a3b8;font-weight:600;font-size:12px">⚠️ Admin chưa cấu hình QR</div>'}
-  `;
+
+function showDepositHistory(){
+  const u = currentUser();
+  if(!u) return;
+  closeDrawer();
+  const list = getUserDeposits(u.email);
+  let html = '<h3>🧾 Lịch sử nạp tiền</h3>';
+  if(!list.length){
+    html += '<div class="empty"><i class="fa-solid fa-receipt"></i>Chưa có yêu cầu nào</div>';
+  } else {
+    html += list.map(d => {
+      const cls = d.status === 'pending' ? 'badge-pending' : (d.status === 'approved' ? 'badge-approved' : 'badge-rejected');
+      const statusText = d.status === 'pending' ? 'ĐANG CHỜ' : (d.status === 'approved' ? 'ĐÃ DUYỆT' : 'TỪ CHỐI');
+      return `<div class="adm-card">
+        <div class="r1"><div class="email">${fmt(d.amount)}</div><span class="badge ${cls}">${statusText}</span></div>
+        <div class="info">PT: <b>${d.method === 'qr' ? 'CK' : 'Thẻ'}</b> · ${fmtDate(d.createdAt)}</div>
+      </div>`;
+    }).join('');
+  }
+  showTempModal(html);
 }
-function openDepositModal(){document.getElementById('depositModal').classList.add('show');}
-function submitDeposit(){
-  const u=currentUser();if(!u)return;
-  const amt=parseInt(document.getElementById('depAmount').value,10);
-  const note=document.getElementById('depNote').value.trim();
-  if(!amt||amt<10000){alert('⚠️ Số tiền tối thiểu 10,000đ!');return;}
-  addDeposit(u.email,amt,'bank',note);
-  document.getElementById('depAmount').value='';
-  document.getElementById('depNote').value='';
-  closeModal('depositModal');
-  alert('✅ Đã gửi yêu cầu nạp '+fmt(amt)+'!\n\nChờ Admin duyệt. Sau khi duyệt hệ thống tự động mua key.');
+
+function showTempModal(htmlContent){
+  let modal = document.getElementById('tempModal');
+  if(!modal){
+    modal = document.createElement('div');
+    modal.id = 'tempModal';
+    modal.className = 'overlay';
+    modal.innerHTML = `<div class="sheet"><div class="sheet-grip"></div><div id="tempModalContent"></div>
+      <button class="logout-btn" style="margin-top:14px;border-color:#cbd5e1;background:#f8fafc;color:#475569" onclick="document.getElementById('tempModal').classList.remove('show')">ĐÓNG</button></div>`;
+    modal.onclick = (e) => { if(e.target === modal) modal.classList.remove('show'); };
+    document.body.appendChild(modal);
+  }
+  document.getElementById('tempModalContent').innerHTML = htmlContent;
+  modal.classList.add('show');
 }
-/* Profile */
+
+/* ===== PROFILE ===== */
 function renderProfile(){
-  const u=currentUser();if(!u)return;
-  document.getElementById('profName').textContent=u.name||u.email.split('@')[0];
-  document.getElementById('profBalance').textContent=u.isAdmin?'∞':fmt(u.balance);
-  document.getElementById('profJoined').textContent=fmtDate(u.createdAt).split(' ')[0];
-  document.getElementById('profLastLogin').textContent=fmtDateShort(u.lastLogin);
-  document.getElementById('profIP').textContent=u.ip||'—';
-  document.getElementById('profRole').textContent=u.isAdmin?'ADMIN':(u.keyExpiry>now()?'VIP MEMBER':'THÀNH VIÊN');
+  const u = currentUser();
+  if(!u) return;
+  document.getElementById('profName').textContent = u.name || u.email.split('@')[0];
+  document.getElementById('profBalance').textContent = u.isAdmin ? '∞' : fmt(u.balance);
+  document.getElementById('profJoined').textContent = fmtDate(u.createdAt).split(' ')[0];
+  document.getElementById('profLastLogin').textContent = fmtDateShort(u.lastLogin);
+  document.getElementById('profIP').textContent = u.ip || '—';
+  document.getElementById('profRole').textContent = u.isAdmin ? 'ADMIN' : ((u.keyExpiry > now()) ? 'VIP MEMBER' : 'THÀNH VIÊN');
+  applyAvatarEverywhere(getUserAvatar());
+
+  const isVIP = u.isAdmin || (u.keyExpiry && u.keyExpiry > now());
+  const badges = document.getElementById('profBadges');
+  badges.innerHTML = '';
+  if(u.isAdmin){
+    badges.innerHTML = '<div class="pbadge red"><i class="fa-solid fa-shield-halved"></i> ADMIN</div><div class="pbadge green"><i class="fa-solid fa-circle" style="font-size:8px"></i> Hoạt động</div>';
+  } else if(isVIP){
+    badges.innerHTML = '<div class="pbadge yellow"><i class="fa-solid fa-crown"></i> VIP Member</div><div class="pbadge green"><i class="fa-solid fa-circle" style="font-size:8px"></i> Hoạt động</div>';
+  } else {
+    badges.innerHTML = '<div class="pbadge yellow"><i class="fa-solid fa-crown"></i> Chưa đăng ký</div><div class="pbadge green"><i class="fa-solid fa-circle" style="font-size:8px"></i> Hoạt động</div>';
+  }
 }
-/* Render all */
+
+/* ===== RENDER ALL ===== */
 function renderAll(){
-  const u=currentUser();if(!u)return;
-  const cfg=loadConfig();
-  document.getElementById('hdrBrand').textContent=cfg.site_name;
-  document.getElementById('marqueeText').textContent=cfg.marquee;
-  document.getElementById('hdrBalance').textContent=u.isAdmin?'∞':fmt(u.balance);
-  document.getElementById('curBalance').textContent=u.isAdmin?'∞':fmt(u.balance);
-  const av=localStorage.getItem(AVATAR_KEY)||cfg.login_avatar||DEFAULT_AVATAR;
-  applyAvatarEverywhere(av);
-  if(cfg.login_avatar)document.getElementById('loginAvatarImg').src=cfg.login_avatar;
-  const isVIP=u.isAdmin||(u.keyExpiry&&u.keyExpiry>now());
-  document.getElementById('curPackage').textContent=u.isAdmin?'Admin':(isVIP?'VIP':'Chưa có');
+  const u = currentUser();
+  if(!u) return;
+  const isVIP = u.isAdmin || (u.keyExpiry && u.keyExpiry > now());
+  document.getElementById('curPackage').textContent = u.isAdmin ? 'Admin' : (isVIP ? 'VIP Member' : 'Chưa có');
+  document.getElementById('curRole').textContent = u.isAdmin ? 'Admin' : (isVIP ? 'VIP' : 'Thành viên');
+  document.getElementById('toolCount').textContent = PORTS.length;
   renderTools();
 }
-/* Init */
-window.addEventListener('load',()=>{
-  const cfg=loadConfig();
-  document.getElementById('loginSiteName').textContent=cfg.site_name||'TOOL LEMINH';
-  if(cfg.login_avatar)document.getElementById('loginAvatarImg').src=cfg.login_avatar;
-  const saved=localStorage.getItem(AVATAR_KEY);
-  if(saved)applyAvatarEverywhere(saved);
-  const u=currentUser();
-  if(u)enterApp();
-  setInterval(()=>{
-    const cu=currentUser();if(!cu||cu.isAdmin)return;
-    if(!cu.keyExpiry||cu.keyExpiry<=now()){
-      if(document.getElementById('app').classList.contains('show')){
-        alert('🔒 Key hết hạn! Mua VIP hoặc nhập key mới.');
-        closeGame();
-        document.getElementById('app').classList.remove('show');
-        document.getElementById('key-screen').classList.add('show');
+
+/* ===== Auto lock ===== */
+window.addEventListener('DOMContentLoaded', () => {
+  const u = currentUser();
+  if(u) enterApp();
+  setInterval(() => {
+    const cu = currentUser();
+    if(!cu || cu.isAdmin) return;
+    if(!cu.keyExpiry || cu.keyExpiry <= now()){
+      if(document.getElementById('app').classList.contains('show') && document.getElementById('tool-screen').classList.contains('show')){
+        alert('🔒 Key đã hết hạn! Vui lòng mua gói VIP để tiếp tục sử dụng tool.');
+        closeToolScreen();
+        showPage('vip');
       }
     }
-  },30000);
+  }, 30000);
 });
-document.getElementById('loginPass').addEventListener('keypress',e=>{if(e.key==='Enter')doLogin();});
-document.getElementById('regPass2').addEventListener('keypress',e=>{if(e.key==='Enter')doRegister();});
-document.getElementById('keyInput').addEventListener('keypress',e=>{if(e.key==='Enter')activateKey();});
